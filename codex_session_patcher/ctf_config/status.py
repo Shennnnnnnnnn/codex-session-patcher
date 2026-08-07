@@ -56,6 +56,9 @@ class CTFStatus:
     opencode_prompt_exists: bool = False
     opencode_workspace_path: Optional[str] = None
     opencode_prompt_path: Optional[str] = None
+    # Grok
+    grok_installed: bool = False
+    grok_agent_path: Optional[str] = None
 
 
 def _top_level_lines(content: str) -> List[str]:
@@ -200,5 +203,19 @@ def check_ctf_status() -> CTFStatus:
             pass
 
     status.opencode_installed = status.opencode_workspace_exists and status.opencode_prompt_exists
+
+    # ── Grok 检查 ──
+    grok_agent_dir = os.path.expanduser("~/.grok/agents/")
+    grok_agent_path = os.path.join(grok_agent_dir, "ctf.md")
+
+    status.grok_agent_path = grok_agent_path
+    if os.path.exists(grok_agent_path):
+        try:
+            with open(grok_agent_path, 'r', encoding='utf-8') as f:
+                content = f.read(500)
+            if CTF_MARKER in content:
+                status.grok_installed = True
+        except Exception:
+            pass
 
     return status

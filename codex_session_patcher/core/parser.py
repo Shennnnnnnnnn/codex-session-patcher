@@ -38,6 +38,7 @@ class SessionParser:
         SessionFormat.CODEX: "~/.codex/sessions/",
         SessionFormat.CLAUDE_CODE: "~/.claude/projects/",
         SessionFormat.OPENCODE: "~/.local/share/opencode/",
+        SessionFormat.GROK: "~/.grok/sessions/",
     }
 
     def __init__(self, session_dir: str = None, session_format: SessionFormat = None):
@@ -113,10 +114,16 @@ class SessionParser:
         """自动检测文件格式"""
         codex_dir = os.path.expanduser("~/.codex/")
         claude_dir = os.path.expanduser("~/.claude/")
+        opencode_dir = os.path.expanduser("~/.local/share/opencode/")
+        grok_dir = os.path.expanduser("~/.grok/sessions/")
         if root.startswith(codex_dir):
             return SessionFormat.CODEX
         if root.startswith(claude_dir):
             return SessionFormat.CLAUDE_CODE
+        if root.startswith(opencode_dir) or root.endswith('.db'):
+            return SessionFormat.OPENCODE
+        if root.startswith(grok_dir):
+            return SessionFormat.GROK
         # 回退到内容检测
         return detect_session_format(full_path)
 

@@ -74,6 +74,16 @@ def handle_ctf_status():
         print('  状态: ❌ 未安装')
         print('  安装命令: codex-patcher --install-opencode-ctf')
 
+    # Grok 状态
+    print('\n[Grok]')
+    if status.grok_installed:
+        print('  状态: ✅ 已安装')
+        print(f'  代理文件: {status.grok_agent_path}')
+        print('  激活命令: grok --agent ctf')
+    else:
+        print('  状态: ❌ 未安装')
+        print('  安装命令: codex-patcher --install-grok-ctf')
+
     print()
     print('注意: 修改后需要新开会话才能生效')
 
@@ -175,6 +185,38 @@ def handle_opencode_ctf_uninstall():
         print(f'❌ {message}')
 
 
+def handle_grok_ctf_install():
+    """安装 Grok CTF 配置"""
+    from .ctf_config import GrokCTFInstaller
+    installer = GrokCTFInstaller()
+
+    print('正在安装 Grok 安全测试代理...')
+    success, message = installer.install()
+
+    if success:
+        print(f'✅ {message}')
+        print()
+        print('激活命令: grok --agent ctf')
+        print()
+        print('注意: 需要新开 Grok 会话才能生效')
+    else:
+        print(f'❌ {message}')
+
+
+def handle_grok_ctf_uninstall():
+    """卸载 Grok CTF 配置"""
+    from .ctf_config import GrokCTFInstaller
+    installer = GrokCTFInstaller()
+
+    print('正在卸载 Grok 安全测试代理...')
+    success, message = installer.uninstall()
+
+    if success:
+        print(f'✅ {message}')
+    else:
+        print(f'❌ {message}')
+
+
 def handle_rewrite(original_request: str):
     """改写提示词"""
     config = load_config()
@@ -242,12 +284,15 @@ def resolve_session_format(args) -> SessionFormat:
         return SessionFormat.CLAUDE_CODE
     elif fmt == 'opencode':
         return SessionFormat.OPENCODE
+    elif fmt == 'grok':
+        return SessionFormat.GROK
     else:
         # auto 模式：如果指定了 session-dir，则自动检测
         if args.session_dir is not None and args.session_dir != argparse.SUPPRESS:
             codex_dir = os.path.expanduser("~/.codex/")
             claude_dir = os.path.expanduser("~/.claude/")
             opencode_dir = os.path.expanduser("~/.local/share/opencode/")
+            grok_dir = os.path.expanduser("~/.grok/sessions/")
             expanded = os.path.expanduser(args.session_dir)
             if expanded.startswith(codex_dir):
                 return SessionFormat.CODEX
@@ -255,20 +300,24 @@ def resolve_session_format(args) -> SessionFormat:
                 return SessionFormat.CLAUDE_CODE
             if expanded.startswith(opencode_dir):
                 return SessionFormat.OPENCODE
+            if expanded.startswith(grok_dir):
+                return SessionFormat.GROK
 
-        # 自动：如果两个目录都存在，优先 Codex（向后兼容）
+        # 自动：目录存在性启发（向后兼容优先 Codex）
         codex_dir = os.path.expanduser("~/.codex/sessions/")
         claude_dir = os.path.expanduser("~/.claude/projects/")
+        grok_sessions = os.path.expanduser("~/.grok/sessions/")
         has_codex = os.path.exists(codex_dir)
         has_claude = os.path.exists(claude_dir)
+        has_grok = os.path.exists(grok_sessions)
 
-        if has_codex and not has_claude:
+        if has_codex and not has_claude and not has_grok:
             return SessionFormat.CODEX
-        elif has_claude and not has_codex:
+        if has_claude and not has_codex and not has_grok:
             return SessionFormat.CLAUDE_CODE
-        else:
-            return SessionFormat.CODEX  # 默认
-
+        if has_grok and not has_codex and not has_claude:
+            return SessionFormat.GROK
+        return SessionFormat.CODEX  # 默认回退
 
 def main():
     parser = argparse.ArgumentParser(
@@ -278,7 +327,7 @@ def main():
     # 会话清理参数
     parser.add_argument('--session-dir', default=None,
                         help='会话目录 (默认根据 --format 自动选择)')
-    parser.add_argument('--format', choices=['codex', 'claude-code', 'opencode', 'auto'],
+    parser.add_argument('--format', choices=['codex', 'claude-code', 'opencode', 'grok', 'auto'],
                         default='auto',
                         help='会话格式 (默认: auto 自动检测)')
     parser.add_argument('--dry-run', action='store_true', help='仅预览，不实际修改文件')
@@ -296,7 +345,7 @@ def main():
     # CTF 配置参数 — Codex
     parser.add_argument('--install-ctf-config', action='store_true', help='安装 Codex 安全测试配置')
     parser.add_argument('--uninstall-ctf-config', action='store_true', help='卸载 Codex 安全测试配置')
-    parser.add_argument('--ctf-status', action='store_true', help='查看安全测试配置状态（Codex + Claude Code）')
+    parser.add_argument('--ctf-status', action='store_true', help='查看安全测试配置状态（Codex + Claude Code + OpenCode + Grok）')
     parser.add_argument('--ctf-injection-mode', choices=['append', 'replace'], default='append',
                         help='Codex 提示词注入方式：append 追加规则，replace 替换内置提示词 (默认: append)')
     # CTF 配置参数 — Claude Code
@@ -305,6 +354,9 @@ def main():
     # CTF 配置参数 — OpenCode
     parser.add_argument('--install-opencode-ctf', action='store_true', help='安装 OpenCode 安全测试配置')
     parser.add_argument('--uninstall-opencode-ctf', action='store_true', help='卸载 OpenCode 安全测试配置')
+    # CTF 配置参数 — Grok
+    parser.add_argument('--install-grok-ctf', action='store_true', help='安装 Grok 安全测试代理')
+    parser.add_argument('--uninstall-grok-ctf', action='store_true', help='卸载 Grok 安全测试代理')
 
     # 提示词改写参数
     parser.add_argument('--rewrite', type=str, metavar='REQUEST', help='改写提示词')
@@ -340,6 +392,14 @@ def main():
         handle_opencode_ctf_uninstall()
         return
 
+    if getattr(args, 'install_grok_ctf', False):
+        handle_grok_ctf_install()
+        return
+
+    if getattr(args, 'uninstall_grok_ctf', False):
+        handle_grok_ctf_uninstall()
+        return
+
     # 提示词改写
     if args.rewrite:
         handle_rewrite(args.rewrite)
@@ -373,7 +433,12 @@ def main():
     if session_dir is None:
         session_dir = SessionParser.DEFAULT_DIRS.get(session_format)
 
-    format_label = 'Codex' if session_format == SessionFormat.CODEX else 'Claude Code'
+    format_label = {
+        SessionFormat.CODEX: 'Codex',
+        SessionFormat.CLAUDE_CODE: 'Claude Code',
+        SessionFormat.OPENCODE: 'OpenCode',
+        SessionFormat.GROK: 'Grok',
+    }.get(session_format, 'Codex')
     print(f'模式: {format_label}')
     print(f'目录: {os.path.expanduser(session_dir)}')
     print()

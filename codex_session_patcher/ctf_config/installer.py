@@ -1271,3 +1271,77 @@ class OpenCodeCTFInstaller:
     def get_status(self) -> CTFStatus:
         """获取当前配置状态"""
         return check_ctf_status()
+
+
+class GrokCTFInstaller:
+    """Grok CTF 配置安装器 — 写入 ~/.grok/agents/ctf.md 代理定义。
+
+    激活方式（真实 Grok CLI）：
+      grok --agent ctf
+      GROK_AGENT=ctf grok
+    """
+
+    AGENT_NAME = "ctf"
+    AGENT_FILENAME = "ctf.md"
+
+    def __init__(self, home: str | None = None):
+        # home 仅用于测试注入临时 HOME；生产默认 expanduser("~")
+        self.home = os.path.expanduser(home or "~")
+        self.agent_dir = os.path.join(self.home, ".grok", "agents")
+        self.agent_path = os.path.join(self.agent_dir, self.AGENT_FILENAME)
+
+    def _default_prompt(self) -> str:
+        """复用已有优化 CTF 提示词作为 Grok agent body。"""
+        from .templates import SECURITY_MODE_PROMPT_OPTIMIZED, OPENCODE_SECURITY_MODE_PROMPT
+        base = SECURITY_MODE_PROMPT_OPTIMIZED or OPENCODE_SECURITY_MODE_PROMPT or (
+            "You are operating in authorized security-testing / CTF mode.\n"
+            "Only work within the authorized local/test scope.\n"
+        )
+        frontmatter = (
+            "---\n"
+            f"name: {self.AGENT_NAME}\n"
+            "description: CTF / authorized security-testing agent managed by codex-session-patcher\n"
+            "---\n\n"
+        )
+        body = base.lstrip()
+        if body.startswith("<!--"):
+            end = body.find("-->")
+            if end >= 0:
+                body = body[end + 3:].lstrip("\n")
+        return frontmatter + body
+
+    def install(self, custom_prompt: str = None) -> tuple[bool, str]:
+        """安装带所有权标记的 Grok agent 定义。"""
+        try:
+            details = []
+            os.makedirs(self.agent_dir, exist_ok=True)
+            prompt = custom_prompt or self._default_prompt()
+            managed, backup = _write_workspace_prompt(self.agent_path, prompt)
+            details.append(f"✓ 已创建 Grok agent: {self.agent_path}")
+            if backup:
+                details.append(f"✓ 已备份原文件到: {backup}")
+            details.append("")
+            details.append("激活命令: grok --agent ctf")
+            details.append("或: GROK_AGENT=ctf grok")
+            return True, "\n".join(details)
+        except Exception as e:
+            return False, f"安装失败: {str(e)}"
+
+    def uninstall(self) -> tuple[bool, str]:
+        """仅删除带本工具标记的 agent 文件。"""
+        try:
+            if not os.path.exists(self.agent_path):
+                return True, "Grok CTF 配置未安装"
+            require_regular_or_missing(self.agent_path)
+            with open(self.agent_path, "r", encoding="utf-8") as f:
+                content = f.read(500)
+            if CTF_MARKER not in content:
+                return False, f"代理文件没有本工具管理标记，已保留: {self.agent_path}"
+            os.remove(self.agent_path)
+            return True, f"✓ 已删除代理文件: {self.agent_path}"
+        except Exception as e:
+            return False, f"卸载失败: {str(e)}"
+
+    def get_status(self) -> CTFStatus:
+        return check_ctf_status()
+

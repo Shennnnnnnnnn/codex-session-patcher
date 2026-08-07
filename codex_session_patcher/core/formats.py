@@ -19,6 +19,7 @@ class SessionFormat(Enum):
     CODEX = "codex"
     CLAUDE_CODE = "claude_code"
     OPENCODE = "opencode"
+    GROK = "grok"
 
 
 # ─── 策略基类 ─────────────────────────────────────────────────────────────────
@@ -272,6 +273,69 @@ class OpenCodeFormatStrategy(FormatStrategy):
         removed = original_len - len(message['content'])
         return updated, removed
 
+# ─── Grok 策略 ───────────────────────────────────────────────────────────────
+
+class GrokFormatStrategy(FormatStrategy):
+    """Grok 格式：chat_history.jsonl 中的 assistant 消息，content 可能为空（tool_calls 时使用 synthetic_reason 或 content 字符串）"""
+
+    def get_assistant_messages(self, lines: List[Dict[str, Any]]) -> List[Tuple[int, Dict[str, Any]]]:
+        messages = []
+        for idx, line in enumerate(lines):
+            if line.get('type') == 'assistant':
+                messages.append((idx, line))
+        return messages
+
+    def get_thinking_items(self, lines: List[Dict[str, Any]]) -> List[Tuple[int, Dict[str, Any]]]:
+        # Grok reasoning (synthetic_reason) is embedded on assistant rows —
+        # strip via remove_thinking_from_message, never delete whole turns.
+        return []
+
+    def extract_text_content(self, msg: Dict[str, Any]) -> str:
+        content = msg.get('content')
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            texts = []
+            for item in content:
+                if isinstance(item, dict) and item.get('type') == 'text':
+                    texts.append(item.get('text', ''))
+            return '\n'.join(texts)
+        # fallback for empty content: synthetic_reason or other
+        synthetic = msg.get('synthetic_reason')
+        if synthetic:
+            return synthetic
+        tool_call_summary = msg.get('tool_calls', [])
+        if tool_call_summary:
+            return f"[tool call: {len(tool_call_summary)} calls]"
+        return ''
+
+    def update_text_content(self, msg: Dict[str, Any], new_text: str) -> Dict[str, Any]:
+        updated = copy.deepcopy(msg)
+        content = updated.get('content')
+        if isinstance(content, str):
+            updated['content'] = new_text
+            return updated
+        if isinstance(content, list):
+            replaced = False
+            for item in content:
+                if isinstance(item, dict) and item.get('type') == 'text':
+                    item['text'] = new_text
+                    replaced = True
+                    break
+            if not replaced:
+                content.append({'type': 'text', 'text': new_text})
+        else:
+            updated['content'] = new_text
+        return updated
+
+    def remove_thinking_from_message(self, msg: Dict[str, Any]) -> Tuple[Dict[str, Any], int]:
+        updated = copy.deepcopy(msg)
+        if 'synthetic_reason' in updated:
+            removed = 1
+            del updated['synthetic_reason']
+            return updated, removed
+        return updated, 0
+
 
 # ─── 工厂 & 工具函数 ──────────────────────────────────────────────────────────
 
@@ -282,11 +346,29 @@ def get_format_strategy(fmt: SessionFormat) -> FormatStrategy:
         return ClaudeCodeFormatStrategy()
     elif fmt == SessionFormat.OPENCODE:
         return OpenCodeFormatStrategy()
+    elif fmt == SessionFormat.GROK:
+        return GrokFormatStrategy()
     raise ValueError(f"未知的会话格式: {fmt}")
 
 
 def detect_session_format(file_path: str) -> SessionFormat:
-    """通过读取 JSONL 文件的前 20 行来判断格式"""
+    """通过读取 JSONL 文件的前 20 行来判断格式。
+
+    Claude Code nests under ``message``; Grok uses top-level ``content`` plus
+    optional ``model_id`` / ``tool_calls`` / ``synthetic_reason``. Path fallback
+    covers ``~/.grok/sessions/`` trees when content is ambiguous.
+    """
+    # Path is authoritative for known roots (avoids misclassifying Grok system rows as Claude).
+    path_guess = _detect_format_from_path(file_path)
+    if path_guess != SessionFormat.CODEX or "/.grok/sessions/" in os.path.expanduser(file_path):
+        # Non-default path guess (or explicit Grok tree) wins immediately.
+        if path_guess == SessionFormat.GROK or "/.grok/sessions/" in os.path.expanduser(file_path):
+            return SessionFormat.GROK
+        if path_guess in (SessionFormat.CLAUDE_CODE, SessionFormat.OPENCODE):
+            return path_guess
+
+    saw_claude = False
+    saw_grok = False
     try:
         with open(file_path, 'r', encoding='utf-8') as f:
             for i, raw_line in enumerate(f):
@@ -300,13 +382,36 @@ def detect_session_format(file_path: str) -> SessionFormat:
                 except json.JSONDecodeError:
                     continue
                 line_type = data.get('type', '')
-                if line_type == 'response_item':
+                if line_type == 'response_item' or line_type == 'event_msg':
                     return SessionFormat.CODEX
-                if line_type in ('assistant', 'user', 'system', 'file-history-snapshot', 'last-prompt'):
+                if line_type in ('file-history-snapshot', 'last-prompt'):
                     return SessionFormat.CLAUDE_CODE
+                if line_type in ('assistant', 'user', 'system'):
+                    # Claude Code: nested message.role
+                    if isinstance(data.get('message'), dict):
+                        saw_claude = True
+                        continue
+                    # Grok signals on top-level assistant rows
+                    if line_type == 'assistant' and (
+                        data.get('model_id')
+                        or data.get('tool_calls') is not None
+                        or data.get('synthetic_reason')
+                        or 'content' in data
+                    ):
+                        saw_grok = True
+                        continue
+                    # bare system/user with top-level content — likely Grok, keep scanning
+                    if 'content' in data and 'message' not in data:
+                        saw_grok = True
+                        continue
     except Exception:
         logger.warning("检测会话格式失败: %s", file_path, exc_info=True)
-    # 回退：根据目录路径推测
+        return _detect_format_from_path(file_path)
+
+    if saw_grok and not saw_claude:
+        return SessionFormat.GROK
+    if saw_claude:
+        return SessionFormat.CLAUDE_CODE
     return _detect_format_from_path(file_path)
 
 
@@ -316,12 +421,15 @@ def _detect_format_from_path(file_path: str) -> SessionFormat:
     codex_dir = os.path.expanduser("~/.codex/")
     claude_dir = os.path.expanduser("~/.claude/")
     opencode_dir = os.path.expanduser("~/.local/share/opencode/")
+    grok_dir = os.path.expanduser("~/.grok/sessions/")
     if expanded.startswith(codex_dir):
         return SessionFormat.CODEX
     if expanded.startswith(claude_dir):
         return SessionFormat.CLAUDE_CODE
     if expanded.startswith(opencode_dir) or expanded.endswith('.db'):
         return SessionFormat.OPENCODE
+    if expanded.startswith(grok_dir) or "/.grok/sessions/" in expanded or expanded.endswith("/.grok/sessions"):
+        return SessionFormat.GROK
     return SessionFormat.CODEX  # 默认回退
 
 

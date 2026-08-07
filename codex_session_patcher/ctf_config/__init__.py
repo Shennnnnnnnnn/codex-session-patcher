@@ -3,7 +3,12 @@
 CTF 配置模块 - 管理 Codex CLI / Claude Code 的安全测试配置
 """
 
-from .installer import CTFConfigInstaller, ClaudeCodeCTFInstaller, OpenCodeCTFInstaller
+from .installer import (
+    CTFConfigInstaller,
+    ClaudeCodeCTFInstaller,
+    OpenCodeCTFInstaller,
+    GrokCTFInstaller,
+)
 from .status import check_ctf_status, CTFStatus
 from .templates import (
     CTF_CONFIG_TEMPLATE, SECURITY_MODE_PROMPT,
@@ -15,6 +20,7 @@ __all__ = [
     'CTFConfigInstaller',
     'ClaudeCodeCTFInstaller',
     'OpenCodeCTFInstaller',
+    'GrokCTFInstaller',
     'CTFStatus',
     'check_ctf_status',
     'CTF_CONFIG_TEMPLATE',
